@@ -154,6 +154,12 @@ def download_source_video(source_url: str) -> tuple[str, dict]:
         "socket_timeout": 30,
         "retries": 2,
         "max_filesize": MAX_DOWNLOAD_BYTES,
+        # YouTube's "confirm you're not a bot" check targets the web
+        # client and disproportionately triggers on datacenter/VPS IPs;
+        # the android/tv clients use a different (non-web) API path that
+        # isn't subject to it, so trying those first avoids requiring
+        # user-supplied cookies for the common case.
+        "extractor_args": {"youtube": {"player_client": ["android", "tv"]}},
     }
 
     try:
