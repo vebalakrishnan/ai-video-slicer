@@ -18,6 +18,7 @@ a mock client.
 """
 import ipaddress
 import logging
+import math
 import os
 import socket
 import tempfile
@@ -37,7 +38,9 @@ DOWNLOAD_DIR = Path(__file__).resolve().parent.parent.parent / "downloads"
 
 # Hard cap on how large a downloaded source video may be - bounds worker
 # disk/bandwidth usage and guards against a malicious/misconfigured host.
-MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
+# 2GB comfortably covers a 2-3 hour course/tutorial video, matching the
+# upload path's MAX_UPLOAD_BYTES (app/routers/videos.py).
+MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
 
 # OpenAI's Whisper endpoint hard-rejects any request body over 25MB (413).
 # A full video file (even a short one) routinely exceeds this, so anything
@@ -45,9 +48,17 @@ MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
 # Whisper only needs the audio anyway. The full video itself is untouched
 # and still used later for rendering.
 WHISPER_MAX_BYTES = 25 * 1024 * 1024  # 25 MB
-# 64kbps mono covers roughly 50+ minutes of audio within that 25MB cap;
-# very long source videos beyond that aren't chunked (a known limitation).
+# 64kbps mono; ~50 minutes of audio fits this within the 25MB cap on its
+# own. Longer sources are split into WHISPER_CHUNK_TARGET_BYTES-sized
+# pieces (see transcribe_video) rather than being limited by it.
 WHISPER_AUDIO_BITRATE = "64k"
+WHISPER_AUDIO_BITRATE_BPS = 64_000  # must match WHISPER_AUDIO_BITRATE above
+
+# Per-chunk target when a source is too long for a single Whisper request -
+# kept well under WHISPER_MAX_BYTES (not right up against it) since AAC
+# encoding/container overhead means actual chunk size can run a bit over
+# the pure bitrate*duration estimate used to pick chunk boundaries.
+WHISPER_CHUNK_TARGET_BYTES = 20 * 1024 * 1024  # 20 MB
 
 # Generous per-call timeout for the transcription request specifically -
 # uploading + transcribing a long video's full audio can genuinely take
@@ -211,20 +222,32 @@ def download_source_video(source_url: str) -> tuple[str, dict]:
     return local_path, metadata
 
 
-def _extract_audio_for_whisper(source_path: str) -> str:
+def _extract_audio_segment(
+    source_path: str, start: float | None = None, duration: float | None = None
+) -> str:
     """Extract a small, compressed mono audio track from `source_path`.
 
-    Used when the source file itself exceeds Whisper's 25MB request-size
-    limit - Whisper only needs the audio, so this avoids ever having to
-    send the (much larger) full video. Returns a temp file path the caller
-    is responsible for deleting.
+    With no `start`/`duration`, extracts the whole track. With both given,
+    extracts just that window (used to split a long source into
+    Whisper-sized chunks). Returns a temp file path the caller must delete.
     """
     fd, audio_path = tempfile.mkstemp(suffix=".m4a")
     os.close(fd)
+    input_kwargs: dict[str, Any] = {}
+    if start is not None:
+        input_kwargs["ss"] = start
+    output_kwargs: dict[str, Any] = {
+        "vn": None,
+        "acodec": "aac",
+        "audio_bitrate": WHISPER_AUDIO_BITRATE,
+        "ac": 1,
+    }
+    if duration is not None:
+        output_kwargs["t"] = duration
     try:
         (
-            ffmpeg.input(source_path)
-            .output(audio_path, vn=None, acodec="aac", audio_bitrate=WHISPER_AUDIO_BITRATE, ac=1)
+            ffmpeg.input(source_path, **input_kwargs)
+            .output(audio_path, **output_kwargs)
             .overwrite_output()
             .run(capture_stdout=True, capture_stderr=True, quiet=True)
         )
@@ -238,6 +261,62 @@ def _extract_audio_for_whisper(source_path: str) -> str:
             f"Failed to extract audio for transcription: {stderr}"
         ) from exc
     return audio_path
+
+
+def _probe_duration_seconds(path: str) -> float:
+    """Return a media file's duration via ffprobe."""
+    try:
+        probe = ffmpeg.probe(path)
+        return float(probe["format"]["duration"])
+    except (ffmpeg.Error, KeyError, ValueError, TypeError) as exc:
+        raise TranscriptionFailedError(f"Failed to determine video duration: {exc}") from exc
+
+
+def _field(segment: Any, name: str, default: Any = None) -> Any:
+    """Read a field from either a dict segment or an SDK object segment."""
+    if isinstance(segment, dict):
+        return segment.get(name, default)
+    return getattr(segment, name, default)
+
+
+def _call_whisper(path: str, openai_client: Any) -> dict:
+    """Send one local audio/video file to Whisper and normalize the response.
+
+    Returns {"segments": [...], "text": str, "duration": float | None} with
+    segment timestamps relative to the start of `path` itself - the caller
+    is responsible for offsetting them when `path` is one chunk of a longer
+    source.
+    """
+    try:
+        with open(path, "rb") as media_file:
+            response = openai_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=media_file,
+                response_format="verbose_json",
+                # Override the client's shared 120s default for this call
+                # specifically: transcribing even one chunk of a long
+                # video can legitimately take well over 120s, whereas the
+                # client's other callers (fast chat-completion calls for
+                # scoring/B-roll) should still fail fast.
+                timeout=WHISPER_TIMEOUT_SECONDS,
+            )
+    except OSError as exc:
+        raise VideoUnreachableError(f"Unable to open video file at {path}") from exc
+    except Exception as exc:
+        logger.exception("Whisper transcription call failed for %s", path)
+        raise TranscriptionFailedError(str(exc)) from exc
+
+    segments = [
+        {
+            "start": float(_field(segment, "start", 0.0)),
+            "end": float(_field(segment, "end", 0.0)),
+            "text": str(_field(segment, "text", "")).strip(),
+        }
+        for segment in getattr(response, "segments", None) or []
+    ]
+    full_text = getattr(response, "text", "") or " ".join(s["text"] for s in segments)
+    duration = getattr(response, "duration", None)
+    return {"segments": segments, "text": full_text, "duration": duration}
 
 
 def transcribe_video(file_path: str, openai_client: Any) -> dict:
@@ -264,54 +343,67 @@ def transcribe_video(file_path: str, openai_client: Any) -> dict:
     if not file_path or not os.path.exists(file_path):
         raise VideoUnreachableError(f"Video file not found at path: {file_path}")
 
-    whisper_input_path = file_path
-    extracted_audio_path: str | None = None
-    if os.path.getsize(file_path) > WHISPER_MAX_BYTES:
-        extracted_audio_path = _extract_audio_for_whisper(file_path)
-        whisper_input_path = extracted_audio_path
+    # Fast path: small enough to send as-is (covers most short/medium
+    # videos - no audio extraction or probing needed at all).
+    if os.path.getsize(file_path) <= WHISPER_MAX_BYTES:
+        return _call_whisper(file_path, openai_client)
 
-    try:
+    total_duration = _probe_duration_seconds(file_path)
+    estimated_audio_bytes = (total_duration * WHISPER_AUDIO_BITRATE_BPS) / 8
+
+    if estimated_audio_bytes <= WHISPER_MAX_BYTES:
+        # A single compressed-audio track comfortably fits Whisper's cap.
+        extracted_path = _extract_audio_segment(file_path)
         try:
-            with open(whisper_input_path, "rb") as media_file:
-                response = openai_client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=media_file,
-                    response_format="verbose_json",
-                    # Override the client's shared 120s default for this
-                    # call specifically: receiving + transcribing a long
-                    # video's full audio track can legitimately take well
-                    # over 120s (e.g. ~7 min for a 34-min source), whereas
-                    # the client's other callers (fast chat-completion
-                    # calls for scoring/B-roll) should still fail fast.
-                    timeout=WHISPER_TIMEOUT_SECONDS,
-                )
-        except OSError as exc:
-            raise VideoUnreachableError(f"Unable to open video file at {file_path}") from exc
-        except Exception as exc:
-            logger.exception("Whisper transcription call failed for %s", file_path)
-            raise TranscriptionFailedError(str(exc)) from exc
-    finally:
-        if extracted_audio_path:
+            return _call_whisper(extracted_path, openai_client)
+        finally:
             try:
-                os.remove(extracted_audio_path)
+                os.remove(extracted_path)
             except OSError:
-                logger.warning("Failed to clean up extracted audio %s", extracted_audio_path)
+                logger.warning("Failed to clean up extracted audio %s", extracted_path)
 
-    def _field(segment: Any, name: str, default: Any = None) -> Any:
-        """Read a field from either a dict segment or an SDK object segment."""
-        if isinstance(segment, dict):
-            return segment.get(name, default)
-        return getattr(segment, name, default)
+    # Long source (e.g. a 2-3 hour course video): even compressed audio
+    # would exceed Whisper's 25MB cap on its own, so split it into
+    # sequential chunks short enough to each fit, transcribe each
+    # separately, and merge the results with timestamps offset by every
+    # chunk's start time so they stay correct against the original video.
+    chunk_seconds = (WHISPER_CHUNK_TARGET_BYTES * 8) / WHISPER_AUDIO_BITRATE_BPS
+    num_chunks = max(1, math.ceil(total_duration / chunk_seconds))
+    logger.info(
+        "Transcribing %s in %d chunk(s) (~%.0fs each) - %.0fs total",
+        file_path,
+        num_chunks,
+        chunk_seconds,
+        total_duration,
+    )
 
-    segments = [
-        {
-            "start": float(_field(segment, "start", 0.0)),
-            "end": float(_field(segment, "end", 0.0)),
-            "text": str(_field(segment, "text", "")).strip(),
-        }
-        for segment in getattr(response, "segments", None) or []
-    ]
-    full_text = getattr(response, "text", "") or " ".join(s["text"] for s in segments)
-    duration = getattr(response, "duration", None)
+    all_segments: list[dict] = []
+    text_parts: list[str] = []
+    chunk_paths: list[str] = []
+    try:
+        for i in range(num_chunks):
+            start = i * chunk_seconds
+            this_duration = min(chunk_seconds, total_duration - start)
+            if this_duration <= 0:
+                break
+            chunk_path = _extract_audio_segment(file_path, start=start, duration=this_duration)
+            chunk_paths.append(chunk_path)
+            result = _call_whisper(chunk_path, openai_client)
+            for segment in result["segments"]:
+                all_segments.append(
+                    {
+                        "start": segment["start"] + start,
+                        "end": segment["end"] + start,
+                        "text": segment["text"],
+                    }
+                )
+            if result["text"]:
+                text_parts.append(result["text"])
+    finally:
+        for chunk_path in chunk_paths:
+            try:
+                os.remove(chunk_path)
+            except OSError:
+                logger.warning("Failed to clean up audio chunk %s", chunk_path)
 
-    return {"segments": segments, "text": full_text, "duration": duration}
+    return {"segments": all_segments, "text": " ".join(text_parts), "duration": total_duration}
