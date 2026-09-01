@@ -8,8 +8,13 @@
 import api from './api';
 import type { BRollSuggestion, ShortClip, VideoJob } from '../types';
 
+// Trailing slash matches the backend route exactly (@router.post("/") /
+// @router.get("/") under the /videos prefix) - without it, FastAPI 307s to
+// the slash form, which for a POST forces the browser to re-send the
+// entire request body (including a large multipart file upload) a second
+// time to complete the redirect.
 export async function submitVideoUrl(sourceUrl: string): Promise<VideoJob> {
-  const { data } = await api.post<VideoJob>('/videos', {
+  const { data } = await api.post<VideoJob>('/videos/', {
     source_url: sourceUrl,
   });
   return data;
@@ -19,7 +24,7 @@ export async function submitVideoUpload(file: File): Promise<VideoJob> {
   const formData = new FormData();
   formData.append('file', file);
 
-  const { data } = await api.post<VideoJob>('/videos', formData, {
+  const { data } = await api.post<VideoJob>('/videos/', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
   return data;
@@ -31,7 +36,7 @@ interface VideoJobListResponse {
 }
 
 export async function listVideos(): Promise<VideoJob[]> {
-  const { data } = await api.get<VideoJobListResponse>('/videos');
+  const { data } = await api.get<VideoJobListResponse>('/videos/');
   return data.videos;
 }
 

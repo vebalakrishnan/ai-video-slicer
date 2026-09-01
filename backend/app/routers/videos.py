@@ -38,7 +38,8 @@ router = APIRouter(prefix="/videos", tags=["videos"])
 UPLOAD_DIR = Path(__file__).resolve().parent.parent.parent / "uploads"
 
 # Hard cap on an uploaded file's size, to bound memory/disk usage per request.
-MAX_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
+# 2 GB accommodates a full-length course/tutorial video upload.
+MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
 
 # Only accept extensions we can actually feed into the transcription/render
 # pipeline - never trust an arbitrary client-supplied extension verbatim.
