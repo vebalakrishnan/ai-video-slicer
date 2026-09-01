@@ -17,9 +17,10 @@ import os
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request, UploadFile, status
+from fastapi import APIRouter, Depends, Request, status
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
+from starlette.datastructures import UploadFile
 
 from app.dependencies import get_current_user, get_db
 from app.exceptions import ConflictError, NotFoundError, ValidationError
