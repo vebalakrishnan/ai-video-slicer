@@ -59,7 +59,7 @@ services:
       - uploads_data:/app/uploads
       - downloads_data:/app/downloads
       - renders_data:/app/renders
-      - ${YTDLP_COOKIES_HOST_PATH:-/dev/null}:/app/youtube_cookies.txt:ro
+      - ${YTDLP_COOKIES_HOST_PATH:-/dev/null}:/app/youtube_cookies.txt
     depends_on:
       db:
         condition: service_healthy
@@ -80,7 +80,7 @@ services:
       - uploads_data:/app/uploads
       - downloads_data:/app/downloads
       - renders_data:/app/renders
-      - ${YTDLP_COOKIES_HOST_PATH:-/dev/null}:/app/youtube_cookies.txt:ro
+      - ${YTDLP_COOKIES_HOST_PATH:-/dev/null}:/app/youtube_cookies.txt
     environment:
       DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@db:5432/${DB_NAME:-ai_video_slicer}
       SECRET_KEY: ${SECRET_KEY}

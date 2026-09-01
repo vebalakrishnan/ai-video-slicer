@@ -156,15 +156,21 @@ def download_source_video(source_url: str) -> tuple[str, dict]:
         "socket_timeout": 30,
         "retries": 2,
         "max_filesize": MAX_DOWNLOAD_BYTES,
+    }
+    if settings.YTDLP_COOKIES_FILE and os.path.exists(settings.YTDLP_COOKIES_FILE):
+        # A logged-in session already gets past YouTube's bot check on its
+        # own - the android/tv override below is for the no-cookies case
+        # only, since those clients don't carry an authenticated session
+        # and yt-dlp errors ("The page needs to be reloaded") when both
+        # are set together.
+        ydl_opts["cookiefile"] = settings.YTDLP_COOKIES_FILE
+    else:
         # YouTube's "confirm you're not a bot" check targets the web
         # client and disproportionately triggers on datacenter/VPS IPs;
         # the android/tv clients use a different (non-web) API path that
         # isn't subject to it, so trying those first avoids requiring
         # user-supplied cookies for the common case.
-        "extractor_args": {"youtube": {"player_client": ["android", "tv"]}},
-    }
-    if settings.YTDLP_COOKIES_FILE and os.path.exists(settings.YTDLP_COOKIES_FILE):
-        ydl_opts["cookiefile"] = settings.YTDLP_COOKIES_FILE
+        ydl_opts["extractor_args"] = {"youtube": {"player_client": ["android", "tv"]}}
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
