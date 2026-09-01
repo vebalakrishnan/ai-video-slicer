@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     # download - optional, ignored when unset or the path doesn't exist.
     YTDLP_COOKIES_FILE: str = ""
 
+    # Base URL of a running bgutil-ytdlp-pot-provider instance (e.g.
+    # http://bgutil-provider:4416), used to mint the PO tokens YouTube now
+    # requires even for cookie-authenticated web-client requests. Optional -
+    # ignored when unset.
+    YTDLP_POT_PROVIDER_URL: str = ""
+
     # Email (SMTP) - all optional
     SMTP_HOST: str = ""
     SMTP_PORT: str = "587"

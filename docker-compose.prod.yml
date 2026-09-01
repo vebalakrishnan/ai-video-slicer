@@ -36,6 +36,10 @@ services:
       timeout: 5s
       retries: 5
 
+  bgutil-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    restart: unless-stopped
+
   backend:
     build: ./backend
     restart: unless-stopped
@@ -55,6 +59,7 @@ services:
       ALLOWED_ORIGINS: '["https://${DOMAIN}","https://www.${DOMAIN}"]'
       FRONTEND_URL: https://${DOMAIN}
       YTDLP_COOKIES_FILE: ${YTDLP_COOKIES_FILE:-}
+      YTDLP_POT_PROVIDER_URL: http://bgutil-provider:4416
     volumes:
       - uploads_data:/app/uploads
       - downloads_data:/app/downloads
@@ -65,6 +70,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      bgutil-provider:
+        condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 10s
@@ -95,11 +102,14 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       YTDLP_COOKIES_FILE: ${YTDLP_COOKIES_FILE:-}
+      YTDLP_POT_PROVIDER_URL: http://bgutil-provider:4416
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+      bgutil-provider:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.tasks inspect ping || exit 1"]
       interval: 15s

@@ -157,6 +157,7 @@ def download_source_video(source_url: str) -> tuple[str, dict]:
         "retries": 2,
         "max_filesize": MAX_DOWNLOAD_BYTES,
     }
+    youtube_extractor_args: dict[str, Any] = {}
     if settings.YTDLP_COOKIES_FILE and os.path.exists(settings.YTDLP_COOKIES_FILE):
         # A logged-in session already gets past YouTube's bot check on its
         # own - the android/tv override below is for the no-cookies case
@@ -170,7 +171,19 @@ def download_source_video(source_url: str) -> tuple[str, dict]:
         # the android/tv clients use a different (non-web) API path that
         # isn't subject to it, so trying those first avoids requiring
         # user-supplied cookies for the common case.
-        ydl_opts["extractor_args"] = {"youtube": {"player_client": ["android", "tv"]}}
+        youtube_extractor_args["player_client"] = ["android", "tv"]
+
+    extractor_args: dict[str, Any] = {}
+    if youtube_extractor_args:
+        extractor_args["youtube"] = youtube_extractor_args
+    if settings.YTDLP_POT_PROVIDER_URL:
+        # Even cookie-authenticated web-client requests now need a PO
+        # (Proof of Origin) token from a running bgutil-ytdlp-pot-provider
+        # instance - without it, extraction fails with a generic
+        # "The page needs to be reloaded" error regardless of cookies.
+        extractor_args["youtubepot-bgutilhttp"] = {"base_url": [settings.YTDLP_POT_PROVIDER_URL]}
+    if extractor_args:
+        ydl_opts["extractor_args"] = extractor_args
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
