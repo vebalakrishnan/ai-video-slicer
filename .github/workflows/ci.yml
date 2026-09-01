@@ -1,0 +1,33 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Backend Tests
+        run: |
+          cd backend
+          pip install -r requirements.txt
+          pytest --cov=app --cov-fail-under=80
+
+      - name: Frontend Tests
+        run: |
+          cd frontend
+          npm ci
+          npm test
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker-compose build

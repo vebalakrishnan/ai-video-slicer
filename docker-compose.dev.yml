@@ -1,0 +1,26 @@
+# docker-compose.dev.yml
+# Development override: mount source for live-reload and run backend/worker with --reload.
+#
+# NOTE on frontend: the `frontend` service builds via a multi-stage Dockerfile that ends in
+# an nginx static file server (see frontend/Dockerfile). Mounting frontend/src into that
+# container does NOT give hot-reload, since nginx only serves the pre-built ./dist output
+# and does not watch or rebuild source files. This override still mounts frontend/src for
+# convenience (e.g. inspecting/editing files against the running container), but for real
+# frontend hot-reload in development, run `npm run dev` directly on the host or in a
+# separate dev-only container (Vite's dev server) instead of relying on this service.
+#
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  backend:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./backend/app:/app/app
+
+  worker:
+    volumes:
+      - ./backend/app:/app/app
+
+  frontend:
+    volumes:
+      - ./frontend/src:/app/src
