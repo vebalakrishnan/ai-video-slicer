@@ -6,6 +6,13 @@ import { AnimatedInput } from '../ui/AnimatedInput';
 import { GradientButton } from '../ui/GradientButton';
 import { useSubmitVideo } from '../../hooks/useVideos';
 
+// Matches MAX_UPLOAD_BYTES in backend/app/routers/videos.py - checked
+// client-side too so a too-large file is rejected instantly instead of
+// only after uploading the whole thing to the server.
+const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB
+const MAX_UPLOAD_LABEL = '2 GB';
+const ALLOWED_UPLOAD_EXTENSIONS = ['.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v'];
+
 /**
  * Tabbed form to submit a video either by pasting a URL or picking a file to
  * upload. On success, navigates to the new video's status page.
@@ -41,6 +48,11 @@ export function UrlOrUploadForm() {
 
     if (!file) {
       setFormError('Choose a video file to upload.');
+      return;
+    }
+
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setFormError(`This file is too large. Maximum upload size is ${MAX_UPLOAD_LABEL}.`);
       return;
     }
 
@@ -95,6 +107,9 @@ export function UrlOrUploadForm() {
               px={3}
               py={2}
             />
+            <Text color="gray.500" fontSize="xs">
+              Maximum size: {MAX_UPLOAD_LABEL}. Formats: {ALLOWED_UPLOAD_EXTENSIONS.join(', ')}.
+            </Text>
             {formError && (
               <Text color="red.500" fontSize="sm">
                 {formError}
