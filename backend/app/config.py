@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     # Stock B-roll
     PEXELS_API_KEY: str = ""
 
+    # yt-dlp cookies file (Netscape format), only needed when a platform's
+    # anti-bot check (e.g. YouTube on datacenter IPs) blocks anonymous
+    # download - optional, ignored when unset or the path doesn't exist.
+    YTDLP_COOKIES_FILE: str = ""
+
     # Email (SMTP) - all optional
     SMTP_HOST: str = ""
     SMTP_PORT: str = "587"

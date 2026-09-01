@@ -1,0 +1,129 @@
+# docker-compose.prod.yml
+#
+# Standalone production compose file for deployment behind the host's
+# existing Traefik reverse proxy (docker provider, network_mode: host,
+# letsencrypt certresolver already configured in /docker/traefik on the
+# VPS). Kept separate from docker-compose.yml (local dev) because none of
+# these services publish host ports - Traefik reaches them over the
+# default docker-compose project network, and merging this as an override
+# on top of docker-compose.yml would concatenate rather than remove the
+# dev file's host port publishes.
+#
+# Usage: docker compose -f docker-compose.prod.yml --env-file .env up -d --build
+
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME:-ai_video_slicer}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@db:5432/${DB_NAME:-ai_video_slicer}
+      SECRET_KEY: ${SECRET_KEY}
+      ALGORITHM: ${ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      REDIS_URL: redis://redis:6379/0
+      PEXELS_API_KEY: ${PEXELS_API_KEY:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      ALLOWED_ORIGINS: '["https://${DOMAIN}","https://www.${DOMAIN}"]'
+      FRONTEND_URL: https://${DOMAIN}
+      YTDLP_COOKIES_FILE: ${YTDLP_COOKIES_FILE:-}
+    volumes:
+      - uploads_data:/app/uploads
+      - downloads_data:/app/downloads
+      - renders_data:/app/renders
+      - ${YTDLP_COOKIES_HOST_PATH:-/dev/null}:/app/youtube_cookies.txt:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  worker:
+    build: ./backend
+    restart: unless-stopped
+    command: celery -A app.tasks worker --loglevel=info
+    volumes:
+      - uploads_data:/app/uploads
+      - downloads_data:/app/downloads
+      - renders_data:/app/renders
+      - ${YTDLP_COOKIES_HOST_PATH:-/dev/null}:/app/youtube_cookies.txt:ro
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@db:5432/${DB_NAME:-ai_video_slicer}
+      SECRET_KEY: ${SECRET_KEY}
+      ALGORITHM: ${ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      REDIS_URL: redis://redis:6379/0
+      PEXELS_API_KEY: ${PEXELS_API_KEY:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      YTDLP_COOKIES_FILE: ${YTDLP_COOKIES_FILE:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks inspect ping || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: https://${DOMAIN}
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.ai-video-slicer.rule=Host(`${DOMAIN}`) || Host(`www.${DOMAIN}`)
+      - traefik.http.routers.ai-video-slicer.entrypoints=websecure
+      - traefik.http.routers.ai-video-slicer.tls.certresolver=letsencrypt
+      - traefik.http.services.ai-video-slicer.loadbalancer.server.port=80
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  uploads_data:
+  downloads_data:
+  renders_data:

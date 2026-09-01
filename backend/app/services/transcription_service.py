@@ -29,6 +29,8 @@ from urllib.parse import urlparse
 import ffmpeg
 import yt_dlp
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 DOWNLOAD_DIR = Path(__file__).resolve().parent.parent.parent / "downloads"
@@ -161,6 +163,8 @@ def download_source_video(source_url: str) -> tuple[str, dict]:
         # user-supplied cookies for the common case.
         "extractor_args": {"youtube": {"player_client": ["android", "tv"]}},
     }
+    if settings.YTDLP_COOKIES_FILE and os.path.exists(settings.YTDLP_COOKIES_FILE):
+        ydl_opts["cookiefile"] = settings.YTDLP_COOKIES_FILE
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
